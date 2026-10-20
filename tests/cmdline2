@@ -1,0 +1,1 @@
+console=hvc0 reboot=t root=/dev/vda entrypoint=/bin/sh dns=8.8.8.8 hostname=k8s dhcp=true root=/dev/vda rw init=/init entrypoint="/bin/sh -c 'nginx; /usr/bin/bash'"

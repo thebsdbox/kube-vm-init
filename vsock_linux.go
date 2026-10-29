@@ -59,7 +59,7 @@ func (p *vsockProxy) serve() {
 		go func() {
 			conn := os.NewFile(uintptr(fd), "vsock")
 			defer conn.Close()
-			if err := proxyVSockConnection(fd, conn, "/mnt"); err != nil {
+			if err := proxyVSockConnection(fd, conn, "/"); err != nil {
 				log.Errorf("vsock proxy connection: %v", err)
 			}
 		}()

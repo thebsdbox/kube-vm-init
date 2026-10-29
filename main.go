@@ -95,6 +95,14 @@ func main() {
 	if err != nil {
 		log.Errorf("Disk Error: [%v]", err)
 	}
+	if port := stuffs["ginit.vsock_port"]; port != "" {
+		listener, err := startVSockProxy(port)
+		if err != nil {
+			log.Errorf("vsock proxy: %v", err)
+		} else {
+			defer listener.Close()
+		}
+	}
 
 	if stuffs["hostname"] != "" {
 		log.Infof("Setting hostname to %s", stuffs["hostname"])

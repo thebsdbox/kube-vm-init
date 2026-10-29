@@ -54,3 +54,17 @@ Note: the `-append` is where we pass things to be read at runtime.. the k/v entr
 ## Troubleshooting..
 
 Just cross your fingers it works first time?
+# Unix socket forwarding over virtio-vsock
+
+When the VM is launched with a virtio-vsock device, append
+`ginit.vsock_port=1024` to its kernel command line (use the same port selected
+by the VM's `--vsock` flag). The init listens on that port after mounting the
+root filesystem. Each connection specifies an absolute path in the guest root
+as a two-byte little-endian length followed by the path; the init connects to
+that Unix socket and replies with `0` on success, or `1` and a newline-terminated
+error on failure. It then forwards bytes in both directions. The proxy is
+disabled when the command-line option is absent.
+
+On the host, `kube-vmctl vsock --uid VM --listen /tmp/app.sock /run/app.sock`
+provides a local Unix socket connected to `/run/app.sock` in the guest. Restrict
+access to the host socket: callers can select any guest Unix socket path.

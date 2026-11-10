@@ -50,6 +50,13 @@ func receiveMemoryFile(conn io.ReadWriter, root string) error {
 	if len(strings.Fields(string(swaps))) != 5 {
 		return proxyError(conn, fmt.Errorf("disable guest swap before injecting sensitive files"))
 	}
+	corePattern, err := os.ReadFile("/proc/sys/kernel/core_pattern")
+	if err != nil {
+		return proxyError(conn, fmt.Errorf("check guest core-dump handler: %w", err))
+	}
+	if strings.HasPrefix(strings.TrimSpace(string(corePattern)), "|") {
+		return proxyError(conn, fmt.Errorf("disable the piped guest core-dump handler before injecting sensitive files"))
+	}
 	parent, err := openMemoryFileParent(root, path)
 	if err != nil {
 		return proxyError(conn, err)

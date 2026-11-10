@@ -118,6 +118,13 @@ func TestMemoryFileMountIntegration(t *testing.T) {
 		if len(strings.Fields(string(swaps))) != 5 {
 			t.Skip("memory-file integration requires swap disabled")
 		}
+		corePattern, err := os.ReadFile("/proc/sys/kernel/core_pattern")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(corePattern)), "|") {
+			t.Skip("memory-file integration requires piped core dumping disabled")
+		}
 		cmd := exec.Command(os.Args[0], "-test.run=^TestMemoryFileMountIntegration$", "-test.v")
 		cmd.Env = append(os.Environ(), "GINIT_MEMORY_MOUNT_TEST=1")
 		cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNS}

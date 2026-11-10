@@ -101,7 +101,8 @@ mount point is empty; an existing file is covered without changing its original
 contents. Re-injection stacks a replacement mount, so covered versions and
 already-open descriptors may retain previous values until shutdown.
 
-Active guest swap is rejected before receiving payload bytes. The paired host
+Active guest swap and piped guest core-dump handlers (which can ignore a zero
+core-size limit) are rejected before receiving payload bytes. The paired host
 CLI must first obtain the daemon's `protect-memory` acknowledgment, which
 rejects host swap and permanently disables both disk-backed pause (including
 automatic idle RAM spill) and snapshots for that VM. This handshake is a

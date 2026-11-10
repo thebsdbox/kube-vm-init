@@ -11,9 +11,29 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/thebsdbox/ginit/pkg/realm"
+	"golang.org/x/sys/unix"
 )
 
 func main() {
+	if port := os.Getenv("GINIT_VSOCK_SERVICE"); port != "" {
+		if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{}); err != nil {
+			log.Fatalf("disable vsock service core dumps: %v", err)
+		}
+		if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+			log.Fatalf("disable vsock service dumping: %v", err)
+		}
+		listener, err := startVSockProxy(port)
+		if err != nil {
+			log.Fatalf("vsock service: %v", err)
+		}
+		defer listener.Close()
+		ready := os.NewFile(3, "vsock-ready")
+		if _, err := ready.Write([]byte{0}); err != nil {
+			log.Fatalf("report vsock readiness: %v", err)
+		}
+		ready.Close()
+		select {}
+	}
 	if err := enterChrootStage(); err != nil {
 		log.Fatalf("chroot stage error: %v", err)
 	}
@@ -95,14 +115,6 @@ func main() {
 	if err != nil {
 		log.Errorf("Disk Error: [%v]", err)
 	}
-	if port := stuffs["ginit.vsock_port"]; port != "" {
-		listener, err := startVSockProxy(port)
-		if err != nil {
-			log.Errorf("vsock proxy: %v", err)
-		} else {
-			defer listener.Close()
-		}
-	}
 
 	if stuffs["hostname"] != "" {
 		log.Infof("Setting hostname to %s", stuffs["hostname"])
@@ -131,6 +143,7 @@ func main() {
 	cmd.Env = append(os.Environ(),
 		"GINIT_CHROOT=/mnt",
 		fmt.Sprintf("GINIT_ENTRYPOINT=%s", stuffs["entrypoint"]),
+		fmt.Sprintf("GINIT_VSOCK_PORT=%s", stuffs["ginit.vsock_port"]),
 	)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
@@ -193,6 +206,14 @@ func enterChrootStage() error {
 
 	if err := syscall.Mount("proc", "/proc", "proc", 0, ""); err != nil {
 		return fmt.Errorf("mount proc: %w", err)
+	}
+	if port := os.Getenv("GINIT_VSOCK_PORT"); port != "" {
+		if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{}); err != nil {
+			return fmt.Errorf("disable guest entrypoint core dumps: %w", err)
+		}
+		if err := launchVSockService(port); err != nil {
+			return err
+		}
 	}
 	entries := splitQuotedFields(entrypoint)
 	if len(entries) == 0 {

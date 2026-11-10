@@ -49,12 +49,17 @@ func (p *vsockProxy) Close() error { return unix.Close(p.fd) }
 
 func (p *vsockProxy) serve() {
 	for {
-		fd, _, err := unix.Accept(p.fd)
+		fd, peer, err := unix.Accept(p.fd)
 		if err != nil {
 			if !errors.Is(err, unix.EBADF) && !errors.Is(err, unix.EINVAL) {
 				log.Errorf("vsock accept: %v", err)
 			}
 			return
+		}
+		if addr, ok := peer.(*unix.SockaddrVM); !ok || addr.CID != unix.VMADDR_CID_HOST {
+			unix.Close(fd)
+			log.Error("vsock: rejected non-host peer")
+			continue
 		}
 		go func() {
 			conn := os.NewFile(uintptr(fd), "vsock")
@@ -79,7 +84,19 @@ func proxyVSockConnection(fd int, conn io.ReadWriter, root string) error {
 		return fmt.Errorf("read socket path length: %w", err)
 	}
 	n := binary.LittleEndian.Uint16(length[:])
-	if n == 0 || n > maxSocketPath {
+	if n == 0 {
+		if fd >= 0 {
+			timeout := unix.NsecToTimeval(int64(30 * 1e9))
+			if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
+				return proxyError(conn, fmt.Errorf("set injection read timeout: %w", err))
+			}
+			if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &timeout); err != nil {
+				return proxyError(conn, fmt.Errorf("set injection write timeout: %w", err))
+			}
+		}
+		return receiveMemoryFile(conn, root)
+	}
+	if n > maxSocketPath {
 		return proxyError(conn, fmt.Errorf("invalid socket path length %d", n))
 	}
 	raw := make([]byte, n)
@@ -116,7 +133,11 @@ func proxyVSockConnection(fd int, conn io.ReadWriter, root string) error {
 }
 
 func proxyError(conn io.Writer, err error) error {
-	_, writeErr := fmt.Fprintf(conn, "\x01%s\n", err)
+	message := strings.NewReplacer("\n", " ", "\r", " ").Replace(err.Error())
+	if len(message) > 4000 {
+		message = message[:4000]
+	}
+	_, writeErr := fmt.Fprintf(conn, "\x01%s\n", message)
 	if writeErr != nil {
 		return fmt.Errorf("%w (report error: %v)", err, writeErr)
 	}

@@ -208,7 +208,10 @@ func mountMemoryFile(memfd int, payload []byte, parent int, name string) (projec
 			releaseLockedMemory(projection)
 		}
 		if stagingMounted {
-			if err := unix.Unmount(stage, 0); err != nil {
+			// The destination bind mount still references a file on this
+			// tmpfs, so detach the staging mount rather than requiring it to
+			// be immediately unmountable.
+			if err := unix.Unmount(stage, unix.MNT_DETACH); err != nil {
 				result = fmt.Errorf("clean up memory staging mount: %v (mount result: %v)", err, result)
 				return
 			}

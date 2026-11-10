@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -109,15 +110,49 @@ func TestFillMemoryFileRejectsTruncation(t *testing.T) {
 	}
 }
 
-func TestMemoryFileMountIntegration(t *testing.T) {
-	if os.Getenv("GINIT_MEMORY_MOUNT_TEST") != "1" {
-		swaps, err := os.ReadFile("/proc/swaps")
+func TestMapLockedMemory(t *testing.T) {
+	fd, err := unix.MemfdCreate("locked-test", unix.MFD_CLOEXEC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if err := unix.Ftruncate(fd, int64(os.Getpagesize())); err != nil {
+		t.Fatal(err)
+	}
+	before := vmLockedBytes(t)
+	data, err := mapLockedMemory(fd, os.Getpagesize(), unix.PROT_READ|unix.PROT_WRITE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLockedMemory(data)
+	if locked := vmLockedBytes(t); locked < before+uint64(os.Getpagesize()) {
+		t.Fatalf("locked bytes=%d, want at least %d", locked, before+uint64(os.Getpagesize()))
+	}
+}
+
+func vmLockedBytes(t *testing.T) uint64 {
+	t.Helper()
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(status), "\n") {
+		if !strings.HasPrefix(line, "VmLck:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		kilobytes, err := strconv.ParseUint(fields[1], 10, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(strings.Fields(string(swaps))) != 5 {
-			t.Skip("memory-file integration requires swap disabled")
-		}
+		return kilobytes * 1024
+	}
+	t.Fatal("VmLck not found in /proc/self/status")
+	return 0
+}
+
+func TestMemoryFileMountIntegration(t *testing.T) {
+	if os.Getenv("GINIT_MEMORY_MOUNT_TEST") != "1" {
 		corePattern, err := os.ReadFile("/proc/sys/kernel/core_pattern")
 		if err != nil {
 			t.Fatal(err)
@@ -181,6 +216,9 @@ func TestMemoryFileMountIntegration(t *testing.T) {
 		if err := unix.Statfs(target, &fs); err != nil || fs.Flags&requiredFlags != requiredFlags {
 			t.Fatalf("unsafe memory-file mount flags=%x err=%v", fs.Flags, err)
 		}
+	}
+	if locked := vmLockedBytes(t); locked < 1<<20 {
+		t.Fatalf("mounted memory files are not retained in locked RAM: %d bytes", locked)
 	}
 	for range 4 {
 		if err := unix.Unmount(target, 0); err != nil {

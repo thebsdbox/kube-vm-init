@@ -17,6 +17,7 @@ import (
 const maxMemoryFile = 1 << 20
 
 var memoryMountMu sync.Mutex
+var memoryLockedFiles [][]byte
 
 func receiveMemoryFile(conn io.ReadWriter, root string) error {
 	var header [26]byte
@@ -43,13 +44,6 @@ func receiveMemoryFile(conn io.ReadWriter, root string) error {
 	if !filepath.IsAbs(path) || path == "/" || filepath.Clean(path) != path || strings.ContainsAny(path, "\x00\n\r") {
 		return proxyError(conn, fmt.Errorf("memory-file path must be a clean absolute file path"))
 	}
-	swaps, err := os.ReadFile("/proc/swaps")
-	if err != nil {
-		return proxyError(conn, fmt.Errorf("check guest swap: %w", err))
-	}
-	if len(strings.Fields(string(swaps))) != 5 {
-		return proxyError(conn, fmt.Errorf("disable guest swap before injecting sensitive files"))
-	}
 	corePattern, err := os.ReadFile("/proc/sys/kernel/core_pattern")
 	if err != nil {
 		return proxyError(conn, fmt.Errorf("check guest core-dump handler: %w", err))
@@ -66,15 +60,30 @@ func receiveMemoryFile(conn io.ReadWriter, root string) error {
 	if err != nil {
 		return proxyError(conn, fmt.Errorf("create memfd: %w", err))
 	}
-	defer unix.Close(fd)
 	if err := unix.Ftruncate(fd, int64(size)); err != nil {
 		return proxyError(conn, fmt.Errorf("size memfd: %w", err))
 	}
+	payload, err := mapLockedMemory(fd, int(size), unix.PROT_READ|unix.PROT_WRITE)
+	if err != nil {
+		return proxyError(conn, fmt.Errorf("lock incoming memory file: %w", err))
+	}
+	fdOpen := true
+	defer func() {
+		if len(payload) != 0 {
+			clear(payload)
+		}
+		if fdOpen {
+			_ = unix.Close(fd)
+		}
+		releaseLockedMemory(payload)
+	}()
 	if _, err := conn.Write([]byte{0}); err != nil {
 		return err
 	}
-	if err := fillMemoryFile(fd, int(size), conn); err != nil {
-		return proxyError(conn, err)
+	if len(payload) != 0 {
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			return proxyError(conn, fmt.Errorf("read memory-file contents: %w", err))
+		}
 	}
 	if err := unix.Fchown(fd, int(owner), int(group)); err != nil {
 		return proxyError(conn, fmt.Errorf("set memfd owner: %w", err))
@@ -82,18 +91,61 @@ func receiveMemoryFile(conn io.ReadWriter, root string) error {
 	if err := unix.Fchmod(fd, mode); err != nil {
 		return proxyError(conn, fmt.Errorf("set memfd mode: %w", err))
 	}
-	if _, err := unix.FcntlInt(uintptr(fd), unix.F_ADD_SEALS,
-		unix.F_SEAL_SEAL|unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_WRITE); err != nil {
-		return proxyError(conn, fmt.Errorf("seal memfd: %w", err))
-	}
 	memoryMountMu.Lock()
-	err = mountMemoryFile(fd, parent, filepath.Base(path))
+	var projection []byte
+	projection, err = mountMemoryFile(fd, payload, parent, filepath.Base(path))
+	if len(projection) != 0 {
+		memoryLockedFiles = append(memoryLockedFiles, projection)
+	}
 	memoryMountMu.Unlock()
+	if len(payload) != 0 {
+		clear(payload)
+		releaseLockedMemory(payload)
+		payload = nil
+	}
+	if _, sealErr := unix.FcntlInt(uintptr(fd), unix.F_ADD_SEALS,
+		unix.F_SEAL_SEAL|unix.F_SEAL_SHRINK|unix.F_SEAL_GROW|unix.F_SEAL_WRITE); sealErr != nil {
+		if err == nil {
+			err = fmt.Errorf("seal memfd: %w", sealErr)
+		}
+	}
 	if err != nil {
 		return proxyError(conn, err)
 	}
+	if err := unix.Close(fd); err != nil {
+		fdOpen = false
+		return proxyError(conn, fmt.Errorf("close sealed memfd: %w", err))
+	}
+	fdOpen = false
 	_, err = conn.Write([]byte{0})
 	return err
+}
+
+func mapLockedMemory(fd, size, protection int) ([]byte, error) {
+	if size == 0 {
+		return nil, nil
+	}
+	data, err := unix.Mmap(fd, 0, size, protection, unix.MAP_SHARED)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Madvise(data, unix.MADV_DONTDUMP); err != nil {
+		unix.Munmap(data)
+		return nil, err
+	}
+	if err := unix.Mlock(data); err != nil {
+		unix.Munmap(data)
+		return nil, err
+	}
+	return data, nil
+}
+
+func releaseLockedMemory(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	_ = unix.Munlock(data)
+	_ = unix.Munmap(data)
 }
 
 func fillMemoryFile(fd, size int, input io.Reader) error {
@@ -140,16 +192,21 @@ func openMemoryFileParent(root, path string) (int, error) {
 	return fd, nil
 }
 
-func mountMemoryFile(memfd, parent int, name string) (result error) {
+func mountMemoryFile(memfd int, payload []byte, parent int, name string) (projection []byte, result error) {
 	// memfd's internal shmem mount is not in this mount namespace, so Linux
-	// rejects binding it directly. Project the sealed data through a private
+	// rejects binding it directly. Project the locked data through a private
 	// tmpfs, then detach the source mount after the file bind pins its pages.
 	stage, err := os.MkdirTemp(fmt.Sprintf("/proc/self/fd/%d", parent), ".kube-vm-memory-")
 	if err != nil {
-		return fmt.Errorf("create memory staging directory: %w", err)
+		return nil, fmt.Errorf("create memory staging directory: %w", err)
 	}
 	stagingMounted := false
+	projectionLocked := false
+	keepProjection := false
 	defer func() {
+		if projectionLocked && !keepProjection {
+			releaseLockedMemory(projection)
+		}
 		if stagingMounted {
 			if err := unix.Unmount(stage, 0); err != nil {
 				result = fmt.Errorf("clean up memory staging mount: %v (mount result: %v)", err, result)
@@ -161,54 +218,37 @@ func mountMemoryFile(memfd, parent int, name string) (result error) {
 		}
 	}()
 	if err := unix.Mount("kube-vm-memory", stage, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "mode=0700,size=2m"); err != nil {
-		return fmt.Errorf("mount memory staging tmpfs: %w", err)
+		return nil, fmt.Errorf("mount memory staging tmpfs: %w", err)
 	}
 	stagingMounted = true
 	source, err := unix.Open(filepath.Join(stage, "file"), unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_CLOEXEC, 0o400)
 	if err != nil {
-		return fmt.Errorf("create tmpfs projection: %w", err)
+		return nil, fmt.Errorf("create tmpfs projection: %w", err)
 	}
 	defer unix.Close(source)
+	if err := unix.Ftruncate(source, int64(len(payload))); err != nil {
+		return nil, fmt.Errorf("size tmpfs projection: %w", err)
+	}
 	var metadata unix.Stat_t
 	if err := unix.Fstat(memfd, &metadata); err != nil {
-		return fmt.Errorf("stat sealed memfd: %w", err)
+		return nil, fmt.Errorf("stat sealed memfd: %w", err)
 	}
-	if metadata.Size != 0 {
-		data, err := unix.Mmap(memfd, 0, int(metadata.Size), unix.PROT_READ, unix.MAP_PRIVATE)
+	if len(payload) != 0 {
+		projection, err = mapLockedMemory(source, len(payload), unix.PROT_READ|unix.PROT_WRITE)
 		if err != nil {
-			return fmt.Errorf("map sealed memfd: %w", err)
+			return nil, fmt.Errorf("lock tmpfs projection: %w", err)
 		}
-		if err := unix.Madvise(data, unix.MADV_DONTDUMP); err != nil {
-			unix.Munmap(data)
-			return fmt.Errorf("exclude projection from core dumps: %w", err)
-		}
-		remaining := data
-		var writeErr error
-		for len(remaining) != 0 {
-			n, err := unix.Write(source, remaining)
-			if err != nil {
-				writeErr = err
-				break
-			}
-			if n == 0 {
-				writeErr = io.ErrShortWrite
-				break
-			}
-			remaining = remaining[n:]
-		}
-		unmapErr := unix.Munmap(data)
-		if writeErr != nil {
-			return fmt.Errorf("copy sealed memfd into tmpfs: %w", writeErr)
-		}
-		if unmapErr != nil {
-			return fmt.Errorf("unmap sealed memfd: %w", unmapErr)
+		projectionLocked = true
+		copy(projection, payload)
+		if err := unix.Mprotect(projection, unix.PROT_READ); err != nil {
+			return nil, fmt.Errorf("protect tmpfs projection: %w", err)
 		}
 	}
 	if err := unix.Fchown(source, int(metadata.Uid), int(metadata.Gid)); err != nil {
-		return fmt.Errorf("set tmpfs owner: %w", err)
+		return nil, fmt.Errorf("set tmpfs owner: %w", err)
 	}
 	if err := unix.Fchmod(source, metadata.Mode&0o777); err != nil {
-		return fmt.Errorf("set tmpfs mode: %w", err)
+		return nil, fmt.Errorf("set tmpfs mode: %w", err)
 	}
 	target, err := unix.Openat(parent, name, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	created := err == nil
@@ -216,38 +256,40 @@ func mountMemoryFile(memfd, parent int, name string) (result error) {
 		target, err = unix.Openat(parent, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	}
 	if err != nil {
-		return fmt.Errorf("open guest mount point: %w", err)
+		return nil, fmt.Errorf("open guest mount point: %w", err)
 	}
 	defer unix.Close(target)
 	var stat unix.Stat_t
 	if err := unix.Fstat(target, &stat); err != nil {
-		return fmt.Errorf("stat guest mount point: %w", err)
+		return nil, fmt.Errorf("stat guest mount point: %w", err)
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
-		return fmt.Errorf("guest mount point must be a regular file, not a symlink or device")
+		return nil, fmt.Errorf("guest mount point must be a regular file, not a symlink or device")
 	}
 	destination := fmt.Sprintf("/proc/self/fd/%d", target)
 	if err := unix.Mount(fmt.Sprintf("/proc/self/fd/%d", source), destination, "", unix.MS_BIND, ""); err != nil {
 		if created {
 			if cleanupErr := unix.Unlinkat(parent, name, 0); cleanupErr != nil {
-				return fmt.Errorf("bind memory file: %w (remove empty mount point: %v)", err, cleanupErr)
+				return nil, fmt.Errorf("bind memory file: %w (remove empty mount point: %v)", err, cleanupErr)
 			}
 		}
-		return fmt.Errorf("bind memory file: %w", err)
+		return nil, fmt.Errorf("bind memory file: %w", err)
 	}
+	keepProjection = true
 	// Re-open through the parent: the original descriptor still refers to the
 	// covered inode, not the newly mounted tmpfs file.
 	mounted, err := unix.Openat(parent, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return fmt.Errorf("open mounted memory file: %w", err)
+		return projection, fmt.Errorf("open mounted memory file: %w", err)
 	}
 	defer unix.Close(mounted)
 	mountPath := fmt.Sprintf("/proc/self/fd/%d", mounted)
 	if err := unix.Mount("", mountPath, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
 		if cleanupErr := unix.Unmount(mountPath, 0); cleanupErr != nil {
-			return fmt.Errorf("make memory file read-only: %w (unmount: %v)", err, cleanupErr)
+			return projection, fmt.Errorf("make memory file read-only: %w (unmount: %v)", err, cleanupErr)
 		}
-		return fmt.Errorf("make memory file read-only: %w", err)
+		keepProjection = false
+		return nil, fmt.Errorf("make memory file read-only: %w", err)
 	}
-	return nil
+	return projection, nil
 }

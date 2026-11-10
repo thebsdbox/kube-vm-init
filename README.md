@@ -91,18 +91,28 @@ place. Paths must be clean and absolute, with no symlink components; the target
 must be absent or a regular file. Ownership defaults to root; `--mode` defaults
 to `0400` and only read-only modes such as `0440` are accepted.
 
-Data is received into a sealed memfd. Linux rejects binding a memfd directly
-because its internal shmem mount is outside the mount namespace. The service
-therefore copies the sealed contents into a private tmpfs file, binds that
-file read-only with `nosuid,nodev,noexec`, and removes the temporary source mount.
-The bind pins the RAM-backed contents until unmounted or the VM shuts down.
+Data is received into a memory-locked memfd, which is sealed after transfer.
+Linux rejects binding a memfd directly because its internal shmem mount is
+outside the mount namespace.
+The service therefore locks a private tmpfs file's mapping before copying the
+contents into it, binds that file read-only with `nosuid,nodev,noexec`, and removes
+the temporary source mount. The service retains the locked mapping until VM
+shutdown, keeping its pages in RAM even when guest swap is enabled.
+The vsock service must remain alive while injected mounts are in use; terminating
+it releases the locks even though the bind mounts may remain.
 Neither the base image nor its CoW overlay receives any payload. A new on-disk
 mount point is empty; an existing file is covered without changing its original
 contents. Re-injection stacks a replacement mount, so covered versions and
 already-open descriptors may retain previous values until shutdown.
 
-Active guest swap and piped guest core-dump handlers (which can ignore a zero
-core-size limit) are rejected before receiving payload bytes. The paired host
+The incoming memfd is locked before the host is asked to send payload bytes.
+Injected data, including replaced versions, consumes locked RAM until the VM
+shuts down; the service fails closed if the OS cannot lock the required pages.
+`memfd_secret` cannot directly back the guest's normal file path, and copying its
+contents into tmpfs would require locking that separate projection too. `mlock`
+prevents swapping but does not exclude pages from hibernation, so keep hibernation
+disabled as well as piped guest core-dump handlers (which can ignore a zero
+core-size limit). The paired host
 CLI must first obtain the daemon's `protect-memory` acknowledgment, which
 rejects host swap and permanently disables both disk-backed pause (including
 automatic idle RAM spill) and snapshots for that VM. This handshake is a
@@ -110,8 +120,9 @@ trusted-host responsibility, not guest authentication of the host daemon.
 In-memory pause/resume remains supported. Service core dumps are disabled;
 the entrypoint inherits a zero core-size limit when vsock is enabled.
 
-Keep host/guest swap, hibernation, kernel crash dumps and piped guest core-dump
-handlers disabled throughout the VM's lifetime. This is not protection against
+Keep hibernation, kernel crash dumps and piped guest core-dump handlers disabled
+throughout the VM's lifetime. Guest swap may remain enabled for paging the rest
+of the system; injected files remain locked in RAM. This is not protection against
 privileged host/guest administrators, memory forensics, or guest applications
 writing the tokens to persistent files or logs. Restrict access to the host
 bridge socket; its callers can inject files as guest root.
@@ -143,10 +154,10 @@ mounted. A lost final acknowledgment is ambiguous: the mount may have succeeded.
 
 ### Validation
 
-`go test . -run 'Test(MemoryFile|FillMemoryFile|Proxy|GuestSocket)'` covers
-framing, errors, bounds, memfd seals, and actual Linux mount behavior. The mount
-integration test creates a private mount namespace and needs `CAP_SYS_ADMIN`
-and no active swap; restricted environments skip that test. It verifies
+`go test . -run 'Test(MemoryFile|FillMemoryFile|MapLockedMemory|Proxy|GuestSocket)'`
+covers framing, errors, bounds, locked-memory accounting, memfd seals, and actual
+Linux mount behavior. The mount integration test creates a private mount namespace
+and needs `CAP_SYS_ADMIN`; restricted environments skip that test. It verifies
 read-only mounts, binary and empty uploads, replacement, symlink rejection,
 truncation, and unchanged on-disk contents after unmounting.
 

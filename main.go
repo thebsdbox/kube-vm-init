@@ -10,9 +10,14 @@ import (
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/thebsdbox/ginit/pkg/bpffsguard"
 	"github.com/thebsdbox/ginit/pkg/realm"
 	"golang.org/x/sys/unix"
 )
+
+// bpffsGuard keeps the bpffs bind mount guard's eBPF programs attached for
+// the lifetime of init.
+var bpffsGuard *bpffsguard.Guard
 
 func main() {
 	if port := os.Getenv("GINIT_VSOCK_SERVICE"); port != "" {
@@ -106,6 +111,20 @@ func main() {
 		go realm.DHCPClient()
 	}
 
+	// Make every mount private before spawning anything. The chroot stage
+	// inherits private copies, so it no longer changes propagation itself
+	// (which the bpffs guard would deny for non-exempt processes).
+	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+		log.Errorf("Error marking mounts private: [%v]", err)
+	}
+
+	bpffsGuard, err = bpffsguard.Start(bpffsguard.Options{})
+	if err != nil {
+		log.Errorf("bpffs guard error: [%v]", err)
+	} else {
+		log.Infof("bpffs bind mount guard active (%s)", bpffsGuard.Mode())
+	}
+
 	err = startTetragon()
 	if err != nil {
 		log.Errorf("Tetragon error: [%v]", err)
@@ -186,10 +205,6 @@ func enterChrootStage() error {
 	entrypoint := os.Getenv("GINIT_ENTRYPOINT")
 	if entrypoint == "" {
 		return fmt.Errorf("missing GINIT_ENTRYPOINT")
-	}
-
-	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
-		return fmt.Errorf("mark mounts private: %w", err)
 	}
 
 	if err := syscall.Chroot(newRoot); err != nil {

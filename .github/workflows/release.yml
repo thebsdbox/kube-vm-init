@@ -1,0 +1,119 @@
+name: Build release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to build and upload assets to
+        required: true
+        type: string
+      kernel_version:
+        description: Kernel version (defaults to KERNEL_VERSION variable or 7.3.6)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name || inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  KERNEL_VERSION: ${{ inputs.kernel_version || vars.KERNEL_VERSION || '7.3.6' }}
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+
+jobs:
+  kernel:
+    name: Build x86-64 kernel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev libelf-dev dwarves \
+            cpio rsync kmod xz-utils zstd curl \
+            "gcc-$(gcc -dumpversion)-plugin-dev"
+
+      - name: Build kernel without modules
+        run: bash kernel/build.sh "$KERNEL_VERSION"
+
+      - name: Stage bootable kernel
+        run: |
+          mkdir -p release-assets
+          cp "kernel/build-$KERNEL_VERSION/arch/x86/boot/bzImage" \
+            "release-assets/linux-$KERNEL_VERSION-amd64"
+          test -s "release-assets/linux-$KERNEL_VERSION-amd64"
+
+      - name: Upload kernel for publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-kernel
+          path: release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  initramfs:
+    name: Build x86-64 initramfs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build initramfs
+        run: |
+          bash ./ginit.sh
+          test -s output/initramfs.cpio.gz
+          gzip -t output/initramfs.cpio.gz
+
+      - name: Upload initramfs for publishing
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-initramfs
+          path: output/initramfs.cpio.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Attach assets to release
+    needs: [kernel, initramfs]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download build assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate checksums and upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd release-assets
+          sha256sum "linux-$KERNEL_VERSION-amd64" initramfs.cpio.gz > SHA256SUMS
+          gh release upload "$RELEASE_TAG" \
+            "linux-$KERNEL_VERSION-amd64" initramfs.cpio.gz SHA256SUMS --clobber

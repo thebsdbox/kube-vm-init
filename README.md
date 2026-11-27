@@ -38,6 +38,24 @@ The `ginit.sh` script will build the code/busybox and create a initrd container 
 
 The `image2disk.sh <name:tag>` script will pull a docker image and convert it to a `raw` disk you can then start with `ginit` etc..
 
+### Release builds
+
+Publishing a GitHub release runs [the release workflow](.github/workflows/release.yml)
+against the release tag. It builds an x86-64 kernel without modules using
+[kernel/build.sh](kernel/build.sh) and the configuration in the kernel folder,
+and builds the initramfs using [ginit.sh](ginit.sh). Both builds must succeed
+before assets are attached to the release:
+
+- `linux-<kernel-version>-amd64` — bootable kernel image (bzImage).
+- `initramfs.cpio.gz` — compressed initramfs.
+- `SHA256SUMS` — SHA-256 checksums for both assets.
+
+The kernel version defaults to **7.3.6**. Set the repository Actions variable
+`KERNEL_VERSION` to change the version used for new releases. The workflow also
+supports manual runs with an existing `release_tag` and an optional
+`kernel_version` override. Reruns replace assets with the same names.
+The selected kernel version must be available on kernel.org.
+
 ## Starting
 
 ```

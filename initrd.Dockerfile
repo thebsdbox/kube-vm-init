@@ -2,7 +2,7 @@
 
 
 # Build ginit as an init
-FROM golang:1.17-alpine as dev
+FROM golang:1.24-alpine as dev
 RUN apk add --no-cache git ca-certificates gcc linux-headers musl-dev
 COPY . /go/src/github.com/thebsdbox/ginit/
 WORKDIR /go/src/github.com/thebsdbox/ginit

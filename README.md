@@ -54,8 +54,11 @@ The kernel configuration ([kernel/.config](kernel/.config)) is a slim,
 virtual-machine-only configuration for KVM-based hypervisors such as QEMU,
 cloud-hypervisor, and Firecracker. It keeps virtio devices (block, net,
 console, vsock, fs, balloon, rng, IOMMU), the emulated devices QEMU uses by
-default (AHCI/PIIX disks, e1000/e1000e NICs, the 8250 serial console), TPM,
-and the BPF, BTF, and tracing features that Tetragon needs. Nested
+default (AHCI/PIIX disks, the 8250 serial console), TPM, and the BPF, BTF, and
+tracing features that Tetragon needs. It also builds in the NIC drivers that
+hypervisors and clouds present to VMs: the emulated e1000, e1000e, igb, e100,
+rtl8139, ne2k_pci, pcnet32, and tulip models, the Intel SR-IOV virtual
+functions (igbvf, ixgbevf, iavf), Google gVNIC, and Amazon ENA. Nested
 virtualization stays enabled (KVM for Intel and AMD, vhost-net, vhost-vsock,
 TUN, and bridging). The networking that VM hosts and Kubernetes nodes rely on
 is built in: tc qdiscs, classifiers, and actions (including clsact and BPF),

@@ -51,6 +51,44 @@ qemu-system-x86_64 -nographic \
 
 Note: the `-append` is where we pass things to be read at runtime.. the k/v entrypoint=.. is where you pass what you want to start from the disk image!
 
+## bpffs bind mount guard
+
+Before starting Tetragon, `ginit` (PID 1) loads the eBPF programs in
+`pkg/bpffsguard` to stop any other process from bind mounting the BPF
+filesystem (`/sys/fs/bpf`, which holds Tetragon's pinned maps and programs).
+Linux never passes the resolved source of a `mount --bind` to an LSM hook, so
+the guard works in layers:
+
+1. Every bpffs mount is marked `MS_UNBINDABLE` (`/sys/fs/bpf` is mounted first
+   if needed). The kernel then rejects `--bind`, `--rbind` and
+   `open_tree(OPEN_TREE_CLONE)` of it with `EINVAL`, and recursive binds of a
+   parent skip it.
+2. With BPF LSM active (`CONFIG_BPF_LSM=y` and `bpf` in `lsm=`, e.g.
+   `lsm=lockdown,capability,landlock,yama,apparmor,bpf`), `lsm/sb_mount` denies
+   (`EPERM`) `mount(2)` propagation changes that would clear that flag on a bpffs
+   mount, directly or via `MS_REC` on a parent. `lsm/capable` denies
+   `mount_setattr(2)` propagation changes (other than to unbindable), because
+   that syscall has no mount LSM hook.
+3. `fentry/__do_loopback` sends `SIGKILL` to any process that starts a bind of a
+   bpffs mount that is still bindable. Without BPF LSM this is the only
+   enforcement, and it detects rather than prevents: the bind can still land in
+   a mount namespace that other processes share.
+
+Only ginit itself is exempt, so the chroot stage no longer makes its mounts
+private itself (PID 1 does it before spawning). Denials and kills are logged.
+Known limits: a `mount_setattr` caller racing another thread to rewrite its
+`struct mount_attr` can bypass layer 2, though a later bind is still caught by
+layer 3. bpffs instances mounted later by other processes stay bindable and are
+covered only by layer 3.
+
+The compiled objects are committed. Run `make generate` after changing
+`pkg/bpffsguard/bpf/*.c` (needs clang and libbpf headers). To run the
+integration test (root, disposable environment):
+
+```
+BPFFSGUARD_INTEGRATION=1 unshare -m --propagation private go test ./pkg/bpffsguard/
+```
+
 ## Troubleshooting..
 
 Just cross your fingers it works first time?

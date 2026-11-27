@@ -20,7 +20,7 @@ SRC = $(shell find . -type f -name '*.go' -not -path "./vendor/*")
 DOCKERTAG ?= $(VERSION)
 REPOSITORY = thebsdbox
 
-.PHONY: all build clean install uninstall fmt simplify check run
+.PHONY: all build clean install uninstall fmt simplify check run generate
 
 all: check install
 
@@ -39,6 +39,10 @@ install:
 
 uninstall: clean
 	@rm -f $$(which ${TARGET})
+
+# Regenerate the committed eBPF objects (needs clang and libbpf headers)
+generate:
+	@go generate ./pkg/bpffsguard/
 
 fmt:
 	@gofmt -l -w $(SRC)

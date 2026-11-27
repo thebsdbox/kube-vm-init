@@ -50,6 +50,21 @@ before assets are attached to the release:
 - `initramfs.cpio.gz` — compressed initramfs.
 - `SHA256SUMS` — SHA-256 checksums for both assets.
 
+The kernel configuration ([kernel/.config](kernel/.config)) is a slim,
+virtual-machine-only configuration for KVM-based hypervisors such as QEMU,
+cloud-hypervisor, and Firecracker. It keeps virtio devices (block, net,
+console, vsock, fs, balloon, rng, IOMMU), the emulated devices QEMU uses by
+default (AHCI/PIIX disks, e1000/e1000e NICs, the 8250 serial console), TPM,
+and the BPF, BTF, and tracing features that Tetragon needs. Nested
+virtualization stays enabled (KVM for Intel and AMD, vhost-net, vhost-vsock,
+TUN, and bridging). Bare-metal hardware support, such as USB, graphics,
+sound, wireless, HP iLO, watchdogs, and CPU frequency scaling, is removed.
+
+`kernel/build.sh` builds only `bzImage`. Options that resolve to `=m` are left
+out of the kernel rather than built in, and the build fails if Kconfig would
+still build any of them in. To include a feature, set it to `=y` in
+`kernel/.config`.
+
 The kernel version defaults to **7.3.6**. Set the repository Actions variable
 `KERNEL_VERSION` to change the version used for new releases. The workflow also
 supports manual runs with an existing `release_tag` and an optional

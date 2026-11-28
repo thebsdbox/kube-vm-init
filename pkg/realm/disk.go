@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	"log/slog"
 )
 
 // Update partitions
@@ -151,11 +151,11 @@ func GrowLVMRoot(drive, volume string, partition int) error {
 	return nil
 }
 
-//Wipe will clean the beginning of the disk
+// Wipe will clean the beginning of the disk
 func Wipe(device string) error {
 	// wipe
 	// dd if=/dev/zero of=/dev/sda bs=1024k count=100
-	log.Println("Wiping disk")
+	slog.Info("Wiping disk")
 	input := "if=/dev/zero"
 	output := fmt.Sprintf("of=%s", device)
 	blockSize := "bs=1024k"
@@ -168,7 +168,7 @@ func Wipe(device string) error {
 	if err != nil {
 		return fmt.Errorf("Disk Wipe command error [%v]", err)
 	}
-	log.Printf("Waiting for command to finish...")
+	slog.Info(fmt.Sprintf("Waiting for command to finish..."))
 	err = cmd.Wait()
 	if err != nil {
 		return fmt.Errorf("Disk Wipe [%v]", err)

@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
+	"log/slog"
 )
 
 const maxSocketPath = 4096
@@ -52,20 +52,20 @@ func (p *vsockProxy) serve() {
 		fd, peer, err := unix.Accept(p.fd)
 		if err != nil {
 			if !errors.Is(err, unix.EBADF) && !errors.Is(err, unix.EINVAL) {
-				log.Errorf("vsock accept: %v", err)
+				slog.Error(fmt.Sprintf("vsock accept: %v", err))
 			}
 			return
 		}
 		if addr, ok := peer.(*unix.SockaddrVM); !ok || addr.CID != unix.VMADDR_CID_HOST {
 			unix.Close(fd)
-			log.Error("vsock: rejected non-host peer")
+			slog.Error("vsock: rejected non-host peer")
 			continue
 		}
 		go func() {
 			conn := os.NewFile(uintptr(fd), "vsock")
 			defer conn.Close()
 			if err := proxyVSockConnection(fd, conn, "/"); err != nil {
-				log.Errorf("vsock proxy connection: %v", err)
+				slog.Error(fmt.Sprintf("vsock proxy connection: %v", err))
 			}
 		}()
 	}

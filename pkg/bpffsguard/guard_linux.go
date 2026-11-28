@@ -13,8 +13,8 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
-	log "github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
+	"log/slog"
 )
 
 const (
@@ -80,7 +80,7 @@ func Start(opts Options) (*Guard, error) {
 
 	lsmActive, err := bpfLSMActive()
 	if err != nil {
-		log.Warnf("bpffsguard: unable to determine active LSMs: %v", err)
+		slog.Warn(fmt.Sprintf("bpffsguard: unable to determine active LSMs: %v", err))
 	}
 	if lsmActive {
 		err = g.attach(spec, "guard_sb_mount", attachLSM)
@@ -99,7 +99,7 @@ func Start(opts Options) (*Guard, error) {
 			g.Close()
 			return nil, fmt.Errorf("BPF LSM is not active and the SIGKILL backstop failed: %w", err)
 		}
-		log.Warnf("bpffsguard: SIGKILL backstop unavailable: %v", err)
+		slog.Warn(fmt.Sprintf("bpffsguard: SIGKILL backstop unavailable: %v", err))
 	} else {
 		g.KillBackstop = true
 	}
@@ -192,7 +192,7 @@ func (g *Guard) logEvents() {
 		rec, err := g.reader.Read()
 		if err != nil {
 			if !errors.Is(err, os.ErrClosed) {
-				log.Errorf("bpffsguard: reading events: %v", err)
+				slog.Error(fmt.Sprintf("bpffsguard: reading events: %v", err))
 			}
 			return
 		}
@@ -200,8 +200,8 @@ func (g *Guard) logEvents() {
 			continue
 		}
 		e := (*bpfEvent)(unsafe.Pointer(&rec.RawSample[0]))
-		log.Warnf("bpffsguard: %s (pid=%d tgid=%d comm=%q flags=%#x)",
-			actionString(e.Action), e.Pid, e.Tgid, commString(e.Comm), e.Flags)
+		slog.Warn(fmt.Sprintf("bpffsguard: %s (pid=%d tgid=%d comm=%q flags=%#x)",
+			actionString(e.Action), e.Pid, e.Tgid, commString(e.Comm), e.Flags))
 	}
 }
 
@@ -257,7 +257,7 @@ func markBPFFSUnbindable() error {
 		// Overmounted or unreachable paths can't be marked; the SIGKILL
 		// backstop still covers binds of any bpffs left bindable.
 		if err := unix.Mount("", p, "", unix.MS_UNBINDABLE, ""); err != nil {
-			log.Warnf("bpffsguard: unable to mark %s unbindable: %v", p, err)
+			slog.Warn(fmt.Sprintf("bpffsguard: unable to mark %s unbindable: %v", p, err))
 		}
 	}
 	return nil

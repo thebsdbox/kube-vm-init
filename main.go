@@ -9,10 +9,10 @@ import (
 	"strings"
 	"syscall"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/thebsdbox/ginit/pkg/bpffsguard"
 	"github.com/thebsdbox/ginit/pkg/realm"
 	"golang.org/x/sys/unix"
+	"log/slog"
 )
 
 // bpffsGuard keeps the bpffs bind mount guard's eBPF programs attached for
@@ -22,25 +22,30 @@ var bpffsGuard *bpffsguard.Guard
 func main() {
 	if port := os.Getenv("GINIT_VSOCK_SERVICE"); port != "" {
 		if err := unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{}); err != nil {
-			log.Fatalf("disable vsock service core dumps: %v", err)
+			slog.Error(fmt.Sprintf("disable vsock service core dumps: %v", err))
+			os.Exit(1)
 		}
 		if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
-			log.Fatalf("disable vsock service dumping: %v", err)
+			slog.Error(fmt.Sprintf("disable vsock service dumping: %v", err))
+			os.Exit(1)
 		}
 		listener, err := startVSockProxy(port)
 		if err != nil {
-			log.Fatalf("vsock service: %v", err)
+			slog.Error(fmt.Sprintf("vsock service: %v", err))
+			os.Exit(1)
 		}
 		defer listener.Close()
 		ready := os.NewFile(3, "vsock-ready")
 		if _, err := ready.Write([]byte{0}); err != nil {
-			log.Fatalf("report vsock readiness: %v", err)
+			slog.Error(fmt.Sprintf("report vsock readiness: %v", err))
+			os.Exit(1)
 		}
 		ready.Close()
 		select {}
 	}
 	if err := enterChrootStage(); err != nil {
-		log.Fatalf("chroot stage error: %v", err)
+		slog.Error(fmt.Sprintf("chroot stage error: %v", err))
+		os.Exit(1)
 	}
 
 	// Fuck it
@@ -73,41 +78,41 @@ func main() {
 	// Ensure that /dev is mounted (first)
 	err := m.MountNamed("dev", true)
 	if err != nil {
-		log.Errorf("Error mounting dev: [%v]", err)
+		slog.Error(fmt.Sprintf("Error mounting dev: [%v]", err))
 	}
 
 	// Create all devices
 	err = d.CreateDevice()
 	if err != nil {
-		log.Errorf("Error creating device: [%v]", err)
+		slog.Error(fmt.Sprintf("Error creating device: [%v]", err))
 	}
 
 	// Mount any additional mounts
 	err = m.MountAll()
 	if err != nil {
-		log.Errorf("Error mounting: [%v]", err)
+		slog.Error(fmt.Sprintf("Error mounting: [%v]", err))
 	}
 
 	// HERE IS WHERE THE MAIN CODE GOES
-	log.Infoln("Starting ginit")
+	slog.Info("Starting ginit")
 	//time.Sleep(time.Second * 2)
 
 	//	log.Infoln("Beginning provisioning process")
 
 	mac, err := realm.GetMAC()
 	if err != nil {
-		log.Errorln(err)
+		slog.Error(err.Error())
 		//realm.Shell()
 	}
-	log.Infof("eth0 mac %s", mac)
+	slog.Info(fmt.Sprintf("eth0 mac %s", mac))
 
 	stuffs, err := ParseCmdLine(CmdlinePath)
 	if err != nil {
-		log.Errorln(err)
+		slog.Error(err.Error())
 	}
 
 	if stuffs["dhcp"] == "true" {
-		log.Println("Starting DHCP client")
+		slog.Info("Starting DHCP client")
 		go realm.DHCPClient()
 	}
 
@@ -115,44 +120,44 @@ func main() {
 	// inherits private copies, so it no longer changes propagation itself
 	// (which the bpffs guard would deny for non-exempt processes).
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
-		log.Errorf("Error marking mounts private: [%v]", err)
+		slog.Error(fmt.Sprintf("Error marking mounts private: [%v]", err))
 	}
 
 	bpffsGuard, err = bpffsguard.Start(bpffsguard.Options{})
 	if err != nil {
-		log.Errorf("bpffs guard error: [%v]", err)
+		slog.Error(fmt.Sprintf("bpffs guard error: [%v]", err))
 	} else {
-		log.Infof("bpffs bind mount guard active (%s)", bpffsGuard.Mode())
+		slog.Info(fmt.Sprintf("bpffs bind mount guard active (%s)", bpffsGuard.Mode()))
 	}
 
 	err = startTetragon()
 	if err != nil {
-		log.Errorf("Tetragon error: [%v]", err)
+		slog.Error(fmt.Sprintf("Tetragon error: [%v]", err))
 	}
 
 	_, err = realm.MountRootVolume(stuffs["newroot"])
 	if err != nil {
-		log.Errorf("Disk Error: [%v]", err)
+		slog.Error(fmt.Sprintf("Disk Error: [%v]", err))
 	}
 
 	if stuffs["hostname"] != "" {
-		log.Infof("Setting hostname to %s", stuffs["hostname"])
+		slog.Info(fmt.Sprintf("Setting hostname to %s", stuffs["hostname"]))
 		err = realm.SetHostname(stuffs["hostname"])
 		if err != nil {
-			log.Errorf("Error setting hostname: [%v]", err)
+			slog.Error(fmt.Sprintf("Error setting hostname: [%v]", err))
 		}
 	}
 
 	if stuffs["dns"] != "" {
-		log.Infof("Setting DNS to %s", stuffs["dns"])
+		slog.Info(fmt.Sprintf("Setting DNS to %s", stuffs["dns"]))
 		err = realm.SetDNS(stuffs["dns"])
 		if err != nil {
-			log.Errorf("Error setting DNS: [%v]", err)
+			slog.Error(fmt.Sprintf("Error setting DNS: [%v]", err))
 		}
 	}
 	self, err := os.Executable()
 	if err != nil {
-		log.Errorf("unable to resolve current executable: [%v]", err)
+		slog.Error(fmt.Sprintf("unable to resolve current executable: [%v]", err))
 		realm.Shell()
 		realm.Reboot()
 	}
@@ -177,18 +182,18 @@ func main() {
 	go func() {
 		s := <-sigc
 		if s == syscall.SIGTERM {
-			log.Infoln("Restarting")
+			slog.Info("Restarting")
 			realm.Reboot()
 		}
 		fmt.Println(s.String()) // ... do something ...|||
 	}()
 	err = cmd.Start()
 	if err != nil {
-		log.Errorf("command error [%v]", err)
+		slog.Error(fmt.Sprintf("command error [%v]", err))
 	}
 	err = cmd.Wait()
 	if err != nil {
-		log.Errorf("error [%v]", err)
+		slog.Error(fmt.Sprintf("error [%v]", err))
 	}
 
 	realm.Shell()

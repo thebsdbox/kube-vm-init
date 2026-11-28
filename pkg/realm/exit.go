@@ -1,4 +1,5 @@
-//+build linux
+//go:build linux
+// +build linux
 
 package realm
 
@@ -6,7 +7,8 @@ import (
 	"os"
 	"syscall"
 
-	log "github.com/sirupsen/logrus"
+	"fmt"
+	"log/slog"
 )
 
 // This contains all methods for managing the final steps with a host
@@ -15,7 +17,7 @@ import (
 func Reboot() {
 	err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
 	if err != nil {
-		log.Errorf("reboot off failed: %v", err)
+		slog.Error(fmt.Sprintf("reboot off failed: %v", err))
 		Shell()
 	}
 	// Should cause a panic
@@ -26,7 +28,7 @@ func Reboot() {
 func PowerOff() {
 	err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
 	if err != nil {
-		log.Errorf("power off failed: %v", err)
+		slog.Error(fmt.Sprintf("power off failed: %v", err))
 		Shell()
 	}
 	// Should cause a panic
@@ -37,7 +39,7 @@ func PowerOff() {
 func Halt() {
 	err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_HALT)
 	if err != nil {
-		log.Errorf("halt failed: %v", err)
+		slog.Error(fmt.Sprintf("halt failed: %v", err))
 		Shell()
 	}
 	// Should cause a panic
@@ -48,9 +50,9 @@ func Halt() {
 func Suspend() {
 	err := syscall.Reboot(syscall.LINUX_REBOOT_CMD_SW_SUSPEND)
 	if err != nil {
-		log.Errorf("suspend failed: %v", err)
+		slog.Error(fmt.Sprintf("suspend failed: %v", err))
 		Shell()
-		log.Warnln("Attempting a reboot")
+		slog.Warn("Attempting a reboot")
 		Reboot()
 	}
 }

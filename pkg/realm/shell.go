@@ -4,13 +4,14 @@ import (
 	"os"
 	"os/exec"
 
-	log "github.com/sirupsen/logrus"
+	"fmt"
+	"log/slog"
 )
 
 // Shell will Start a userland shell
 func Shell() {
 	// Shell stuff
-	log.Println("Starting Shell 🐚")
+	slog.Info("Starting Shell 🐚")
 
 	// TTY hack to support ctrl+c
 	cmd := exec.Command("/usr/bin/setsid", "cttyhack", "/bin/sh")
@@ -20,10 +21,10 @@ func Shell() {
 
 	err := cmd.Start()
 	if err != nil {
-		log.Errorf("Shell error [%v]", err)
+		slog.Error(fmt.Sprintf("Shell error [%v]", err))
 	}
 	err = cmd.Wait()
 	if err != nil {
-		log.Errorf("Shell error [%v]", err)
+		slog.Error(fmt.Sprintf("Shell error [%v]", err))
 	}
 }

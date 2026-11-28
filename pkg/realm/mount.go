@@ -8,7 +8,7 @@ import (
 	"os"
 	"syscall"
 
-	log "github.com/sirupsen/logrus"
+	"log/slog"
 )
 
 // DefaultMounts will return the defult mounts
@@ -138,10 +138,10 @@ func (m *Mounts) CreateFolder() error {
 			if err != nil {
 				return fmt.Errorf("Folder[%s] create error [%v]", m.Mount[x].Path, err)
 			}
-			log.Debugf("Folder created [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path)
+			slog.Debug(fmt.Sprintf("Folder created [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path))
 		}
 	}
-	log.Info("All folders created")
+	slog.Info("All folders created")
 	return nil
 }
 
@@ -153,10 +153,10 @@ func (m *Mounts) MountAll() error {
 			if err != nil {
 				return fmt.Errorf("Mounting [%s] -> [%s] error [%v]", m.Mount[x].Source, m.Mount[x].Path, err)
 			}
-			log.Debugf("Mounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path)
+			slog.Debug(fmt.Sprintf("Mounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path))
 		}
 	}
-	log.Info("All filesystems mounted")
+	slog.Info("All filesystems mounted")
 	return nil
 }
 
@@ -173,7 +173,7 @@ func (m *Mounts) MountNamed(name string, remove bool) error {
 				return fmt.Errorf("Mounting [%s] -> [%s] error [%v]", m.Mount[x].Source, m.Mount[x].Path, err)
 			}
 
-			log.Debugf("Mounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path)
+			slog.Debug(fmt.Sprintf("Mounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path))
 			// Remove this element
 			if remove {
 				m.Mount = append(m.Mount[:x], m.Mount[x+1:]...)
@@ -193,7 +193,7 @@ func (m *Mounts) UnMountAll() error {
 		if err != nil {
 			return fmt.Errorf("Unmounting [%s] -> [%s] error [%v]", m.Mount[x].Source, m.Mount[x].Path, err)
 		}
-		log.Infof("Unmounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path)
+		slog.Info(fmt.Sprintf("Unmounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path))
 		return nil
 	}
 
@@ -211,7 +211,7 @@ func (m *Mounts) UnMountNamed(name string) error {
 				return fmt.Errorf("Unmounting [%s] -> [%s] error [%v]", m.Mount[x].Source, m.Mount[x].Path, err)
 			}
 
-			log.Infof("Unmounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path)
+			slog.Info(fmt.Sprintf("Unmounted [%s] -> [%s]", m.Mount[x].Name, m.Mount[x].Path))
 			// Remove this element
 			m.Mount = append(m.Mount[:x], m.Mount[x+1:]...)
 			return nil
